@@ -1,46 +1,45 @@
 /**
  * HomeFlow HighLevel Customizations
- * Release: v1.0.1
+ * Release: v1.0.1 (Unified Declarative Architecture)
  * 
- * Unified async route controller for HighLevel CRM web application.
+ * Centralized async route controller for HighLevel CRM web application.
  * Handles subaccount exclusions, route redirections, layout adjustments,
  * and location-scoped sidebar/header styling without dependencies.
  */
 (function () {
   'use strict';
 
-  /* ─────────────────────────────
+  /* =========================================================
      1. CONFIGURATION & CONSTANTS
-  ───────────────────────────── */
-  // Main customization excluded subaccount location IDs
-  const MAIN_EXCLUDED_LOCATIONS = [
+  ========================================================= */
+  const EXCLUDED_LOCATION_IDS = [
     "3hxU86Tlg4Hj231eATmo",
     "wU0QPFEzdTl7CpndxylS"
   ];
 
-  // HomeFlow specific target location ID
-  const HOMEFLOW_TARGET_LOCATION = "XzzLQ42sqJR43o30CP34";
+  const HOMEFLOW_LOCATION_ID = "XzzLQ42sqJR43o30CP34";
 
-  // Managed Style Element IDs
   const STYLE_IDS = {
-    SIDEBAR_GLOBAL: "custom-sidebar-global-layout",
+    SIDEBAR: "custom-sidebar-global-layout",
     REVIEWS: "custom-review-layout-test",
     WIDGET: "custom-widget-layout-test",
     SOCIAL_PLANNER: "custom-social-planner-layout-test",
     REPUTATION_INTEGRATIONS: "custom-reputation-integrations-layout-test",
     REVIEWS_AI: "custom-reviews-ai-layout-test",
-    HOMEFLOW_HEADER: "hide-header-templates-emails"
+    HOMEFLOW: "hide-header-templates-emails"
   };
 
-  /* ─────────────────────────────
-     2. ASYNC LOCATION LOOKUP (WITH FALLBACK PRIORITY)
-  ───────────────────────────── */
+  const ALL_STYLE_IDS = Object.values(STYLE_IDS);
+
+  /* =========================================================
+     2. SHARED ASYNC LOCATION RESOLVER
+  ========================================================= */
   async function getLocationId() {
-    // Priority 1: HighLevel native AppUtils API (v3) - treated as asynchronous
+    // Priority 1: HighLevel native AppUtils API (v3) - awaited
     if (
       window.AppUtils &&
       window.AppUtils.Utilities &&
-      typeof window.AppUtils.Utilities.getCurrentLocation === 'function'
+      typeof window.AppUtils.Utilities.getCurrentLocation === "function"
     ) {
       try {
         const loc = await window.AppUtils.Utilities.getCurrentLocation();
@@ -48,23 +47,21 @@
           return loc.id;
         }
       } catch (e) {
-        // Fall through gracefully if AppUtils is temporarily uninitialized or fails
+        // Fall through gracefully if AppUtils is uninitialized or fails
       }
     }
 
-    // Priority 2: Extract location ID from standard URL path (/v2/location/{LOCATION_ID}/...)
-    const pathMatch = window.location.pathname.match(/\/v2\/location\/([^\/]+)/);
-    if (pathMatch && pathMatch[1]) {
-      return pathMatch[1];
+    // Priority 2: Extract location ID from URL path (/v2/location/{LOCATION_ID}/...)
+    const match = window.location.pathname.match(/\/v2\/location\/([^\/]+)/);
+    if (match && match[1]) {
+      return match[1];
     }
 
-    // Priority 3: Query search parameters fallback (location_id / loc)
+    // Priority 3: Search params fallback (location_id / loc)
     try {
       const searchParams = new URLSearchParams(window.location.search);
       const queryLoc = searchParams.get("location_id") || searchParams.get("loc");
-      if (queryLoc) {
-        return queryLoc;
-      }
+      if (queryLoc) return queryLoc;
     } catch (e) {
       // Fall through
     }
@@ -72,9 +69,9 @@
     return null;
   }
 
-  /* ─────────────────────────────
-     3. ROUTE CHECKS & HELPERS
-  ───────────────────────────── */
+  /* =========================================================
+     3. ROUTE & PAGE HELPERS
+  ========================================================= */
   function getCurrentTab() {
     try {
       return new URLSearchParams(window.location.search).get("tab");
@@ -103,12 +100,12 @@
     return pathname.includes("/reputation/settings");
   }
 
-  function isReputationIntegrationsPage(pathname) {
-    return isReputationSettingsPage(pathname) && getCurrentTab() === "reputationIntegrations";
+  function isReputationIntegrationsPage(pathname, tab) {
+    return isReputationSettingsPage(pathname) && tab === "reputationIntegrations";
   }
 
-  function isReviewsAIPage(pathname) {
-    return isReputationSettingsPage(pathname) && getCurrentTab() === "reviewsAI";
+  function isReviewsAIPage(pathname, tab) {
+    return isReputationSettingsPage(pathname) && tab === "reviewsAI";
   }
 
   function isConversationTemplatesPage(pathname) {
@@ -119,39 +116,42 @@
     return pathname.includes("/marketing/emails");
   }
 
-  /* ─────────────────────────────
-     4. EFFICIENT DOM STYLE MANAGEMENT
-  ───────────────────────────── */
-  function injectStyle(id, cssContent) {
-    let styleEl = document.getElementById(id);
-    if (!styleEl) {
-      styleEl = document.createElement("style");
-      styleEl.id = id;
-      styleEl.innerHTML = cssContent;
-      (document.head || document.documentElement).appendChild(styleEl);
-    } else if (styleEl.innerHTML !== cssContent) {
-      styleEl.innerHTML = cssContent;
+  /* =========================================================
+     4. DECLARATIVE STYLE MANAGEMENT
+  ========================================================= */
+  function ensureStyle(styleId, css, shouldExist) {
+    const existing = document.getElementById(styleId);
+
+    if (!shouldExist) {
+      if (existing) existing.remove();
+      return;
     }
-  }
 
-  function removeStyle(id) {
-    const el = document.getElementById(id);
-    if (el && el.parentNode) {
-      el.parentNode.removeChild(el);
+    if (existing) {
+      if (existing.innerHTML !== css) {
+        existing.innerHTML = css;
+      }
+      return;
     }
+
+    const style = document.createElement("style");
+    style.id = styleId;
+    style.innerHTML = css;
+    (document.head || document.documentElement).appendChild(style);
   }
 
-  function removeStyles(ids) {
-    ids.forEach(removeStyle);
+  function removeStyle(styleId) {
+    const element = document.getElementById(styleId);
+    if (element) element.remove();
   }
 
-  function removeAllStyles() {
-    Object.values(STYLE_IDS).forEach(removeStyle);
+  function removeAllLayouts() {
+    ALL_STYLE_IDS.forEach(removeStyle);
   }
 
-  /* ─────────────────────────────
-     5. CSS TEMPLATES & GENERATORS
-  ───────────────────────────── */
+  /* =========================================================
+     5. CSS TEMPLATES
+  ========================================================= */
   function getSidebarGlobalCss(locId) {
     return `
       /* ── MOVE CUSTOM LINKS UP ── */
@@ -162,7 +162,7 @@
         order: 4 !important;
       }
 
-      /* ── HIDE SIDEBAR ITEMS (scoped to current location) ── */
+      /* ── HIDE SIDEBAR ITEMS ── */
       .sidebar-v2-location.${locId} #sb_import-data,
       .sidebar-v2-location.${locId} #sb_custom-values,
       .sidebar-v2-location.${locId} #sb_contacts,
@@ -174,14 +174,12 @@
   }
 
   const REVIEWS_CSS = `
-    /* Hide top header bar */
     header.hl_header,
     .hl_header,
     .hl-topbar {
       display: none !important;
     }
 
-    /* Hide the reputation sub-menu tabs */
     .reputation-tabs,
     .hl_tab-nav,
     [class*="reputation"] > nav,
@@ -190,17 +188,11 @@
       display: none !important;
     }
 
-    /* Hide Add Reviews button */
-    #add-reviews-button {
-      display: none !important;
-    }
-
-    /* Hide Send Review Request button */
+    #add-reviews-button,
     #send-review-request-button {
       display: none !important;
     }
 
-    /* Full width layout */
     #app,
     .hl_wrapper,
     .hl_main,
@@ -213,19 +205,16 @@
   `;
 
   const WIDGET_AND_SOCIAL_PLANNER_CSS = `
-    /* Hide top header/menu bar */
     header.hl_header,
     .hl_header,
     .hl-topbar {
       display: none !important;
     }
 
-    /* Specific selector for the top bar flex row */
     #app > div:nth-child(2) > div:nth-child(1) > div.flex.v2-open > div:nth-child(2) > header.hl_header > div.flex.flex-row {
       display: none !important;
     }
 
-    /* Full width layout */
     #app,
     .hl_wrapper,
     .hl_main,
@@ -240,7 +229,6 @@
   function getReputationSettingsCss(locId) {
     const locPrefix = locId ? `.sidebar-v2-location.${locId} ` : "";
     return `
-      /* Hide top header/menu bar broadly */
       header.hl_header,
       .hl_header,
       .hl-topbar {
@@ -252,7 +240,6 @@
         overflow: hidden !important;
       }
 
-      /* Extra specific top-header selectors for the settings pages */
       #app > div:nth-child(2) > div:nth-child(1) > div.flex.v2-open > div:nth-child(2) > header.hl_header > div.container-fluid.\\!justify-end,
       #app > div:nth-child(2) > div:nth-child(1) > div.flex.v2-open > div:nth-child(2) > header.hl_header > div.flex.flex-row,
       ${locPrefix}#app > div:nth-child(2) > div:nth-child(1) > div.flex.v2-open > div:nth-child(2) > header.hl_header > div.container-fluid.\\!justify-end,
@@ -265,13 +252,11 @@
         overflow: hidden !important;
       }
 
-      /* Remove space left behind by hidden header */
       #app > div:nth-child(2) > div:nth-child(1) > div.flex.v2-open > div:nth-child(2) {
         padding-top: 0 !important;
         margin-top: 0 !important;
       }
 
-      /* Hide the Reputation Settings internal left tab/sidebar */
       #reputation-settings-container > div.hr-wrapper-container.reputationApp > div.hr-config-provider.font-sans > div.flex.min-h-0 > div.hr-tabs.hr-tabs--bar-type > div.hr-tabs-nav--bar-type.hr-tabs-nav--left > div.hr-tabs-nav-scroll-wrapper > div.hr-tabs-nav-y-scroll > div.hr-tabs-nav-scroll-content,
       ${locPrefix}#reputation-settings-container > div.hr-wrapper-container.reputationApp > div.hr-config-provider.font-sans > div.flex.min-h-0 > div.hr-tabs.hr-tabs--bar-type > div.hr-tabs-nav--bar-type.hr-tabs-nav--left > div.hr-tabs-nav-scroll-wrapper > div.hr-tabs-nav-y-scroll > div.hr-tabs-nav-scroll-content {
         display: none !important;
@@ -282,7 +267,6 @@
         overflow: hidden !important;
       }
 
-      /* Collapse the internal tab-nav wrapper */
       #reputation-settings-container .hr-tabs-nav--left,
       #reputation-settings-container .hr-tabs-nav-scroll-wrapper,
       #reputation-settings-container .hr-tabs-nav-y-scroll {
@@ -294,7 +278,6 @@
         overflow: hidden !important;
       }
 
-      /* Expand settings content after internal left tab menu is hidden */
       #reputation-settings-container > div.hr-wrapper-container.reputationApp > div.hr-config-provider.font-sans > div.flex.min-h-0 > div.hr-tabs.hr-tabs--bar-type,
       ${locPrefix}#reputation-settings-container > div.hr-wrapper-container.reputationApp > div.hr-config-provider.font-sans > div.flex.min-h-0 > div.hr-tabs.hr-tabs--bar-type {
         width: 100% !important;
@@ -309,8 +292,7 @@
     `;
   }
 
-  const HOMEFLOW_HEADER_CSS = `
-    /* Hide top header */
+  const HOMEFLOW_CSS = `
     header.hl_header,
     .hl_header,
     .hl-topbar {
@@ -322,179 +304,242 @@
       overflow: hidden !important;
     }
 
-    /* Hide header flex row */
     #app > div:nth-child(2) > div:nth-child(1) > div.flex.v2-open > div:nth-child(2) > header.hl_header > div.flex.flex-row {
       display: none !important;
     }
 
-    /* Remove top spacing (corrected margin-top syntax) */
     #app > div:nth-child(2) > div:nth-child(1) > div.flex.v2-open > div:nth-child(2) {
       margin-top: 0 !important;
       padding-top: 0 !important;
     }
   `;
 
-  /* ─────────────────────────────
-     6. CENTRAL ASYNC ROUTE CONTROLLER
-  ───────────────────────────── */
-  let currentRunToken = 0;
-
-  async function runController() {
-    // Generate a unique token for this invocation sequence
-    const runToken = ++currentRunToken;
-
-    const pathname = window.location.pathname;
-    const currentLocId = await getLocationId();
-
-    // Race Condition Guard: If another navigation event occurred while awaiting location, abort.
-    if (runToken !== currentRunToken) {
+  /* =========================================================
+     6. REPUTATION OVERVIEW REDIRECT
+  ========================================================= */
+  async function redirectToReviews(state) {
+    if (state.isExcluded || !state.locationId || !state.isOverviewPage) {
       return;
     }
 
-    const isMainAllowed = Boolean(currentLocId && !MAIN_EXCLUDED_LOCATIONS.includes(currentLocId));
+    const reviewsPath = `/v2/location/${state.locationId}/reputation/reviews`;
 
-    /* ── A. REPUTATION OVERVIEW REDIRECT ── */
-    if (isMainAllowed && isOverviewPage(pathname)) {
-      if (currentLocId) {
-        const reviewsUrl = `/v2/location/${currentLocId}/reputation/reviews`;
-        if (window.location.pathname !== reviewsUrl) {
-          // Use HighLevel / Browser SPA routing without hard reloads
-          window.history.replaceState(null, "", reviewsUrl);
-          window.dispatchEvent(new PopStateEvent("popstate"));
-          return;
-        }
-      }
+    if (window.location.pathname === reviewsPath) {
+      return;
     }
 
-    /* ── B. MAIN CUSTOMIZATION LOGIC ── */
-    if (!isMainAllowed) {
-      // Remove all main customization styles if excluded or location unknown
-      removeStyles([
-        STYLE_IDS.SIDEBAR_GLOBAL,
-        STYLE_IDS.REVIEWS,
-        STYLE_IDS.WIDGET,
-        STYLE_IDS.SOCIAL_PLANNER,
-        STYLE_IDS.REPUTATION_INTEGRATIONS,
-        STYLE_IDS.REVIEWS_AI
-      ]);
-    } else {
-      // Apply sidebar global styles for allowed locations
-      injectStyle(STYLE_IDS.SIDEBAR_GLOBAL, getSidebarGlobalCss(currentLocId));
-
-      const pageStyleIds = [
-        STYLE_IDS.REVIEWS,
-        STYLE_IDS.WIDGET,
-        STYLE_IDS.SOCIAL_PLANNER,
-        STYLE_IDS.REPUTATION_INTEGRATIONS,
-        STYLE_IDS.REVIEWS_AI
-      ];
-
-      if (isReviewsPage(pathname)) {
-        removeStyles(pageStyleIds.filter(id => id !== STYLE_IDS.REVIEWS));
-        injectStyle(STYLE_IDS.REVIEWS, REVIEWS_CSS);
-      } else if (isWidgetPage(pathname)) {
-        removeStyles(pageStyleIds.filter(id => id !== STYLE_IDS.WIDGET));
-        injectStyle(STYLE_IDS.WIDGET, WIDGET_AND_SOCIAL_PLANNER_CSS);
-      } else if (isSocialPlannerPage(pathname)) {
-        removeStyles(pageStyleIds.filter(id => id !== STYLE_IDS.SOCIAL_PLANNER));
-        injectStyle(STYLE_IDS.SOCIAL_PLANNER, WIDGET_AND_SOCIAL_PLANNER_CSS);
-      } else if (isReputationIntegrationsPage(pathname)) {
-        removeStyles(pageStyleIds.filter(id => id !== STYLE_IDS.REPUTATION_INTEGRATIONS));
-        injectStyle(STYLE_IDS.REPUTATION_INTEGRATIONS, getReputationSettingsCss(currentLocId));
-      } else if (isReviewsAIPage(pathname)) {
-        removeStyles(pageStyleIds.filter(id => id !== STYLE_IDS.REVIEWS_AI));
-        injectStyle(STYLE_IDS.REVIEWS_AI, getReputationSettingsCss(currentLocId));
-      } else {
-        removeStyles(pageStyleIds);
+    // Try HighLevel official RouteHelper first
+    try {
+      if (
+        window.AppUtils &&
+        window.AppUtils.RouteHelper &&
+        typeof window.AppUtils.RouteHelper.navigate === "function"
+      ) {
+        await window.AppUtils.RouteHelper.navigate({
+          path: reviewsPath,
+          replace: true
+        });
+        return;
       }
+    } catch (e) {
+      // Fall back to browser history navigation
     }
 
-    /* ── C. HOMEFLOW CUSTOMIZATION LOGIC ── */
-    const isHomeflowAllowed = Boolean(
-      currentLocId === HOMEFLOW_TARGET_LOCATION &&
-      (isConversationTemplatesPage(pathname) || isMarketingEmailsPage(pathname))
-    );
+    window.history.replaceState(null, "", reviewsPath);
+    window.dispatchEvent(new PopStateEvent("popstate"));
 
-    if (isHomeflowAllowed) {
-      injectStyle(STYLE_IDS.HOMEFLOW_HEADER, HOMEFLOW_HEADER_CSS);
-    } else {
-      removeStyle(STYLE_IDS.HOMEFLOW_HEADER);
+    setTimeout(function () {
+      if (window.location.pathname.includes("/reputation/overview")) {
+        window.location.href = reviewsPath;
+      }
+    }, 300);
+  }
+
+  /* =========================================================
+     7. STATE CALCULATOR & APPLIER
+  ========================================================= */
+  async function buildState() {
+    const locationId = await getLocationId();
+    const pathname = window.location.pathname;
+    const tab = getCurrentTab();
+
+    return {
+      url: window.location.href,
+      pathname,
+      tab,
+      locationId,
+      isExcluded: !locationId || EXCLUDED_LOCATION_IDS.includes(locationId),
+      isOverviewPage: isOverviewPage(pathname),
+      isReviewsPage: isReviewsPage(pathname),
+      isWidgetPage: isWidgetPage(pathname),
+      isSocialPlannerPage: isSocialPlannerPage(pathname),
+      isReputationIntegrationsPage: isReputationIntegrationsPage(pathname, tab),
+      isReviewsAIPage: isReviewsAIPage(pathname, tab),
+      isHomeFlowTemplatesPage: locationId === HOMEFLOW_LOCATION_ID && isConversationTemplatesPage(pathname),
+      isHomeFlowEmailsPage: locationId === HOMEFLOW_LOCATION_ID && isMarketingEmailsPage(pathname)
+    };
+  }
+
+  function getStateKey(state) {
+    return [
+      state.url,
+      state.locationId || "",
+      state.isExcluded,
+      state.isOverviewPage,
+      state.isReviewsPage,
+      state.isWidgetPage,
+      state.isSocialPlannerPage,
+      state.isReputationIntegrationsPage,
+      state.isReviewsAIPage,
+      state.isHomeFlowTemplatesPage,
+      state.isHomeFlowEmailsPage
+    ].join("|");
+  }
+
+  async function applyState(state) {
+    if (state.isExcluded) {
+      removeAllLayouts();
+      return;
+    }
+
+    if (state.isOverviewPage) {
+      removeAllLayouts();
+      await redirectToReviews(state);
+      return;
+    }
+
+    ensureStyle(STYLE_IDS.SIDEBAR, getSidebarGlobalCss(state.locationId), true);
+    ensureStyle(STYLE_IDS.REVIEWS, REVIEWS_CSS, state.isReviewsPage);
+    ensureStyle(STYLE_IDS.WIDGET, WIDGET_AND_SOCIAL_PLANNER_CSS, state.isWidgetPage);
+    ensureStyle(STYLE_IDS.SOCIAL_PLANNER, WIDGET_AND_SOCIAL_PLANNER_CSS, state.isSocialPlannerPage);
+    ensureStyle(STYLE_IDS.REPUTATION_INTEGRATIONS, getReputationSettingsCss(state.locationId), state.isReputationIntegrationsPage);
+    ensureStyle(STYLE_IDS.REVIEWS_AI, getReputationSettingsCss(state.locationId), state.isReviewsAIPage);
+    ensureStyle(STYLE_IDS.HOMEFLOW, HOMEFLOW_CSS, state.isHomeFlowTemplatesPage || state.isHomeFlowEmailsPage);
+  }
+
+  /* =========================================================
+     8. CENTRAL ASYNC CONTROLLER & SCHEDULER
+  ========================================================= */
+  let running = false;
+  let rerunRequested = false;
+  let runSequence = 0;
+  let lastAppliedStateKey = null;
+  let scheduled = false;
+
+  async function run() {
+    if (running) {
+      rerunRequested = true;
+      return;
+    }
+
+    running = true;
+    const thisRun = ++runSequence;
+
+    try {
+      const state = await buildState();
+
+      if (thisRun !== runSequence) {
+        return;
+      }
+
+      const stateKey = getStateKey(state);
+
+      if (stateKey === lastAppliedStateKey) {
+        return;
+      }
+
+      await applyState(state);
+
+      if (thisRun === runSequence) {
+        lastAppliedStateKey = stateKey;
+      }
+    } catch (error) {
+      console.error("[GHL White Label Customizations] Runtime error:", error);
+    } finally {
+      running = false;
+
+      if (rerunRequested) {
+        rerunRequested = false;
+        scheduleRun();
+      }
     }
   }
 
-  /* ─────────────────────────────
-     7. SINGLE CENTRALIZED NAVIGATION LISTENER & SCHEDULER
-  ───────────────────────────── */
-  let isScheduled = false;
-
   function scheduleRun() {
-    if (isScheduled) return;
-    isScheduled = true;
-    Promise.resolve().then(() => {
-      isScheduled = false;
-      runController();
+    if (scheduled) return;
+    scheduled = true;
+    Promise.resolve().then(function () {
+      scheduled = false;
+      run();
     });
   }
 
-  // 1. Initial invocation
-  scheduleRun();
+  /* =========================================================
+     9. ROUTE LISTENERS & OBSERVERS
+  ========================================================= */
+  window.addEventListener("routeLoaded", scheduleRun);
+  window.addEventListener("routeChangeEvent", scheduleRun);
+  window.addEventListener("popstate", scheduleRun);
 
-  // 2. Official HighLevel SPA Lifecycle Events
-  window.addEventListener('routeLoaded', scheduleRun);
-  window.addEventListener('routeChangeEvent', scheduleRun);
+  // Single History API wrapper
+  const origPush = history.pushState;
+  const origReplace = history.replaceState;
 
-  // 3. Intercept History API (PushState / ReplaceState / PopState)
-  const origPushState = history.pushState;
-  const origReplaceState = history.replaceState;
-
-  if (typeof origPushState === 'function') {
+  if (typeof origPush === "function") {
     history.pushState = function () {
-      const result = origPushState.apply(this, arguments);
+      const res = origPush.apply(this, arguments);
       scheduleRun();
-      return result;
+      return res;
     };
   }
 
-  if (typeof origReplaceState === 'function') {
+  if (typeof origReplace === "function") {
     history.replaceState = function () {
-      const result = origReplaceState.apply(this, arguments);
+      const res = origReplace.apply(this, arguments);
       scheduleRun();
-      return result;
+      return res;
     };
   }
 
-  window.addEventListener('popstate', scheduleRun);
-
-  // 4. Single MutationObserver + 250ms URL Fallback
-  let lastUrl = location.href;
-
-  function checkUrlChange() {
-    if (location.href !== lastUrl) {
-      lastUrl = location.href;
-      scheduleRun();
-    }
-  }
-
-  const observer = new MutationObserver(checkUrlChange);
+  // Single MutationObserver for URL changes
+  let lastObservedUrl = window.location.href;
+  let observerStarted = false;
 
   function startObserver() {
-    if (document.body) {
-      observer.observe(document.body, { childList: true, subtree: true });
-    }
+    if (observerStarted || !document.body) return;
+    observerStarted = true;
+
+    const observer = new MutationObserver(function () {
+      if (window.location.href !== lastObservedUrl) {
+        lastObservedUrl = window.location.href;
+        scheduleRun();
+      }
+    });
+
+    observer.observe(document.body, { childList: true, subtree: true });
   }
 
-  if (document.readyState === 'loading') {
-    window.addEventListener('DOMContentLoaded', startObserver);
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", function () {
+      startObserver();
+      scheduleRun();
+    }, { once: true });
   } else {
     startObserver();
+    scheduleRun();
   }
 
-  window.addEventListener('load', () => {
+  window.addEventListener("load", function () {
     startObserver();
     scheduleRun();
-  });
+  }, { once: true });
 
-  // Single fallback interval for non-standard URL changes
-  setInterval(checkUrlChange, 250);
+  // Single 250ms fallback polling for non-History SPA URL mutations
+  setInterval(function () {
+    if (window.location.href !== lastObservedUrl) {
+      lastObservedUrl = window.location.href;
+      scheduleRun();
+    }
+  }, 250);
 
 })();
