@@ -1,181 +1,316 @@
-
 (function () {
+  "use strict";
 
-    /* ─────────────────────────────
-       EXCLUDED SUBACCOUNTS
-       The script will run on ALL subaccounts EXCEPT these two.
-       To exclude more accounts in future, just add their Location IDs here.
-    ───────────────────────────── */
-    const EXCLUDED_LOCATION_IDS = [
-        "3hxU86Tlg4Hj231eATmo",
-        "wU0QPFEzdTl7CpndxylS"
-    ];
+  /* =========================================================
+     CONFIGURATION
+  ========================================================= */
 
-    /* ─────────────────────────────
-       GET LOCATION ID FROM URL OR APPUTILS
-    ───────────────────────────── */
-    function getLocationId() {
-        // Prefer GHL native AppUtils API (v3) when available
-        if (window.AppUtils && window.AppUtils.Utilities) {
-            try {
-                const loc = window.AppUtils.Utilities.getCurrentLocation();
-                if (loc && loc.id) {
-                    return loc.id;
-                }
-            } catch (e) {
-                // Fall through to URL fallback
-            }
+  const EXCLUDED_LOCATION_IDS = [
+    "3hxU86Tlg4Hj231eATmo",
+    "wU0QPFEzdTl7CpndxylS"
+  ];
+
+  const HOMEFLOW_LOCATION_ID = "XzzLQ42sqJR43o30CP34";
+
+  const STYLE_IDS = {
+    SIDEBAR: "custom-sidebar-global-layout",
+    REVIEWS: "custom-review-layout-test",
+    WIDGET: "custom-widget-layout-test",
+    SOCIAL_PLANNER: "custom-social-planner-layout-test",
+    REPUTATION_INTEGRATIONS: "custom-reputation-integrations-layout-test",
+    REVIEWS_AI: "custom-reviews-ai-layout-test",
+    HOMEFLOW: "hide-header-templates-emails"
+  };
+
+  const ALL_STYLE_IDS = Object.values(STYLE_IDS);
+
+  let scheduled = false;
+  let running = false;
+  let rerunRequested = false;
+  let runSequence = 0;
+  let lastAppliedStateKey = null;
+  let lastObservedUrl = window.location.href;
+
+  /* =========================================================
+     SHARED LOCATION RESOLVER
+     HighLevel getCurrentLocation() is async.
+  ========================================================= */
+
+  async function getLocationId() {
+    try {
+      if (
+        window.AppUtils &&
+        window.AppUtils.Utilities &&
+        typeof window.AppUtils.Utilities.getCurrentLocation === "function"
+      ) {
+        const loc = await window.AppUtils.Utilities.getCurrentLocation();
+
+        if (loc && loc.id) {
+          return loc.id;
         }
-        // Fallback: extract from URL path
-        const match = window.location.pathname.match(/\/v2\/location\/([^\/]+)/);
-        return match ? match[1] : null;
+      }
+    } catch (error) {
+      // Fall back to URL detection below.
     }
 
-    /* ─────────────────────────────
-       CHECK: SHOULD SCRIPT RUN ON THIS LOCATION?
-    ───────────────────────────── */
-    function shouldRunOnLocation() {
-        const currentLocId = getLocationId();
-        if (!currentLocId) return false;
-        // Run on ALL subaccounts EXCEPT the excluded ones
-        return !EXCLUDED_LOCATION_IDS.includes(currentLocId);
+    const match = window.location.pathname.match(
+      /\/v2\/location\/([^/]+)/
+    );
+
+    return match ? match[1] : null;
+  }
+
+  /* =========================================================
+     ROUTE / PAGE HELPERS
+  ========================================================= */
+
+  function getCurrentPathname() {
+    return window.location.pathname;
+  }
+
+  function getCurrentTab() {
+    return new URLSearchParams(window.location.search).get("tab");
+  }
+
+  function isOverviewPage(pathname) {
+    return pathname.includes("/reputation/overview");
+  }
+
+  function isReviewsPage(pathname) {
+    return pathname.includes("/reputation/reviews");
+  }
+
+  function isWidgetPage(pathname) {
+    return pathname.includes("/reputation/widget");
+  }
+
+  function isSocialPlannerPage(pathname) {
+    return pathname.includes("/marketing/social-planner");
+  }
+
+  function isReputationSettingsPage(pathname) {
+    return pathname.includes("/reputation/settings");
+  }
+
+  function isReputationIntegrationsPage(pathname, tab) {
+    return (
+      isReputationSettingsPage(pathname) &&
+      tab === "reputationIntegrations"
+    );
+  }
+
+  function isReviewsAIPage(pathname, tab) {
+    return (
+      isReputationSettingsPage(pathname) &&
+      tab === "reviewsAI"
+    );
+  }
+
+  function isConversationTemplatesPage(pathname) {
+    return pathname.includes("/conversations/templates");
+  }
+
+  function isMarketingEmailsPage(pathname) {
+    return pathname.includes("/marketing/emails");
+  }
+
+  /* =========================================================
+     STATE BUILDER
+  ========================================================= */
+
+  async function buildState() {
+    const locationId = await getLocationId();
+    const pathname = getCurrentPathname();
+    const tab = getCurrentTab();
+
+    return {
+      url: window.location.href,
+      pathname,
+      tab,
+      locationId,
+
+      isExcluded:
+        !locationId ||
+        EXCLUDED_LOCATION_IDS.includes(locationId),
+
+      isOverviewPage: isOverviewPage(pathname),
+      isReviewsPage: isReviewsPage(pathname),
+      isWidgetPage: isWidgetPage(pathname),
+      isSocialPlannerPage: isSocialPlannerPage(pathname),
+
+      isReputationIntegrationsPage:
+        isReputationIntegrationsPage(pathname, tab),
+
+      isReviewsAIPage:
+        isReviewsAIPage(pathname, tab),
+
+      isHomeFlowTemplatesPage:
+        locationId === HOMEFLOW_LOCATION_ID &&
+        isConversationTemplatesPage(pathname),
+
+      isHomeFlowEmailsPage:
+        locationId === HOMEFLOW_LOCATION_ID &&
+        isMarketingEmailsPage(pathname)
+    };
+  }
+
+  function getStateKey(state) {
+    return [
+      state.url,
+      state.locationId || "",
+      state.isExcluded,
+      state.isOverviewPage,
+      state.isReviewsPage,
+      state.isWidgetPage,
+      state.isSocialPlannerPage,
+      state.isReputationIntegrationsPage,
+      state.isReviewsAIPage,
+      state.isHomeFlowTemplatesPage,
+      state.isHomeFlowEmailsPage
+    ].join("|");
+  }
+
+  /* =========================================================
+     STYLE MANAGER
+  ========================================================= */
+
+  function ensureStyle(styleId, css, shouldExist) {
+    const existing = document.getElementById(styleId);
+
+    if (!shouldExist) {
+      if (existing) {
+        existing.remove();
+      }
+      return;
     }
 
-    /* ─────────────────────────────
-       GET ACTIVE TAB FROM QUERY STRING
-    ───────────────────────────── */
-    function getCurrentTab() {
-        return new URLSearchParams(window.location.search).get("tab");
+    if (existing) {
+      return;
     }
 
-    /* ─────────────────────────────
-       PAGE CHECKS
-    ───────────────────────────── */
-    function isOverviewPage() {
-        return window.location.pathname.includes("/reputation/overview");
+    const style = document.createElement("style");
+    style.id = styleId;
+    style.innerHTML = css;
+    document.head.appendChild(style);
+  }
+
+  function removeStyle(styleId) {
+    const element = document.getElementById(styleId);
+
+    if (element) {
+      element.remove();
     }
+  }
 
-    function isReviewsPage() {
-        return window.location.pathname.includes("/reputation/reviews");
-    }
+  function removeAllLayouts() {
+    ALL_STYLE_IDS.forEach(removeStyle);
+  }
 
-    function isWidgetPage() {
-        return window.location.pathname.includes("/reputation/widget");
-    }
+  /* =========================================================
+     CSS BUILDERS
+  ========================================================= */
 
-    function isSocialPlannerPage() {
-        return window.location.pathname.includes("/marketing/social-planner");
-    }
-
-    function isReputationSettingsPage() {
-        return window.location.pathname.includes("/reputation/settings");
-    }
-
-    function isReputationIntegrationsPage() {
-        return isReputationSettingsPage() && getCurrentTab() === "reputationIntegrations";
-    }
-
-    function isReviewsAIPage() {
-        return isReputationSettingsPage() && getCurrentTab() === "reviewsAI";
-    }
-
-    /* ─────────────────────────────
-       REDIRECT: OVERVIEW → REVIEWS
-    ───────────────────────────── */
-    function redirectToReviews() {
-        if (!shouldRunOnLocation()) return;
-
-        if (isOverviewPage()) {
-            const locId = getLocationId();
-            if (!locId) return;
-
-            const reviewsUrl = "/v2/location/" + locId + "/reputation/reviews";
-
-            window.history.replaceState(null, "", reviewsUrl);
-            window.dispatchEvent(new PopStateEvent("popstate"));
-
-            setTimeout(function () {
-                if (isOverviewPage()) {
-                    window.location.href = reviewsUrl;
-                }
-            }, 300);
-        }
-    }
-
-    /* ─────────────────────────────
-       SIDEBAR GLOBAL STYLES
-       Applied on every page for all non-excluded subaccounts.
-       Covers:
-         1. Move custom nav links (Add Contacts, Messaging) up in sidebar order
-         2. Hide import-data, custom-values, contacts, and signal sidebar items
-       NOTE: The location-class selectors (.sidebar-v2-location.LOCID) are
-       dynamically scoped to the current location ID so they only fire when
-       that specific subaccount is active, exactly as the original CSS did —
-       but now they are injected/removed via JS under the same exclusion gate.
-    ───────────────────────────── */
-    function getSidebarGlobalCss(locId) {
-        return `
+  function getSidebarGlobalCss(locId) {
+    return `
       /* ── MOVE CUSTOM LINKS UP ── */
 
-      /* Add Contacts – move up in sidebar order */
       div#app div.sidebar-v2-location #sidebar-v2 div.hl_nav-header nav.w-full a[id='78ae8e45-8a17-4905-8a5e-ff819d60eed6'] {
         order: 4 !important;
       }
 
-      /* Messaging – move up in sidebar order */
       div#app div.sidebar-v2-location #sidebar-v2 div.hl_nav-header nav.w-full a[id='77fece63-4fcd-40e0-be67-35132d26ebde'] {
         order: 4 !important;
       }
 
-      /* ── HIDE SIDEBAR ITEMS (scoped to current location) ── */
+      /* ── HIDE SIDEBAR ITEMS ── */
 
-      /* Hide import-data sidebar item */
-      .sidebar-v2-location.${locId} #sb_import-data {
-        display: none !important;
-      }
-
-      /* Hide custom-values sidebar item */
-      .sidebar-v2-location.${locId} #sb_custom-values {
-        display: none !important;
-      }
-
-      /* Hide contacts sidebar item */
-      .sidebar-v2-location.${locId} #sb_contacts {
-        display: none !important;
-      }
-
-           /* Hiding/styling specific elements for location */
-      .sidebar-v2-location.${locId} #sb_contacts {
-          display: none !important;
-      }
-      /* Hiding/styling specific elements for location */
-      .sidebar-v2-location.${locId} #sb_import-data {
-          display: none !important;
-      }
-
-     /* Hiding/styling specific elements for location */
-        .sidebar-v2-location.${locId} #sb_manage-preferences {
-            display: none !important;
-        }
-
-       /* Hiding/styling specific elements for location */
-        .sidebar-v2-location.${locId} #sb_custom-values {
-            display: none !important;
-        }
-
-      /* Hide signal sidebar item (ID starts with digit, escaped with \\36 ) */
+      .sidebar-v2-location.${locId} #sb_import-data,
+      .sidebar-v2-location.${locId} #sb_custom-values,
+      .sidebar-v2-location.${locId} #sb_contacts,
+      .sidebar-v2-location.${locId} #sb_manage-preferences,
       .sidebar-v2-location.${locId} #\\36 7d04f019b961eb53460bcdc {
         display: none !important;
       }
     `;
+  }
+
+  const REVIEWS_CSS = `
+    header.hl_header,
+    .hl_header,
+    .hl-topbar {
+      display: none !important;
     }
 
-    /* ─────────────────────────────
-       COMMON CSS FOR REPUTATION SETTINGS TABS
-    ───────────────────────────── */
-    function getReputationSettingsCss(locId) {
-        return `
-      /* Hide top header/menu bar broadly */
+    .reputation-tabs,
+    .hl_tab-nav,
+    [class*="reputation"] > nav,
+    .tab-navigation,
+    .nav-tabs {
+      display: none !important;
+    }
+
+    #add-reviews-button,
+    #send-review-request-button {
+      display: none !important;
+    }
+
+    #app,
+    .hl_wrapper,
+    .hl_main,
+    main {
+      margin: 0 !important;
+      padding: 0 !important;
+      width: 100% !important;
+      max-width: 100% !important;
+    }
+  `;
+
+  const WIDGET_CSS = `
+    header.hl_header,
+    .hl_header,
+    .hl-topbar {
+      display: none !important;
+    }
+
+    #app > div:nth-child(2) > div:nth-child(1) > div.flex.v2-open > div:nth-child(2) > header.hl_header > div.flex.flex-row {
+      display: none !important;
+    }
+
+    #app,
+    .hl_wrapper,
+    .hl_main,
+    main {
+      margin: 0 !important;
+      padding: 0 !important;
+      width: 100% !important;
+      max-width: 100% !important;
+    }
+  `;
+
+  const SOCIAL_PLANNER_CSS = `
+    header.hl_header,
+    .hl_header,
+    .hl-topbar {
+      display: none !important;
+    }
+
+    #app > div:nth-child(2) > div:nth-child(1) > div.flex.v2-open > div:nth-child(2) > header.hl_header > div.flex.flex-row {
+      display: none !important;
+    }
+
+    #app,
+    .hl_wrapper,
+    .hl_main,
+    main {
+      margin: 0 !important;
+      padding: 0 !important;
+      width: 100% !important;
+      max-width: 100% !important;
+    }
+  `;
+
+  function getReputationSettingsCss(locId) {
+    return `
       header.hl_header,
       .hl_header,
       .hl-topbar {
@@ -187,7 +322,6 @@
         overflow: hidden !important;
       }
 
-      /* Extra specific top-header selectors for the settings pages */
       #app > div:nth-child(2) > div:nth-child(1) > div.flex.v2-open > div:nth-child(2) > header.hl_header > div.container-fluid.\\!justify-end,
       #app > div:nth-child(2) > div:nth-child(1) > div.flex.v2-open > div:nth-child(2) > header.hl_header > div.flex.flex-row,
       .sidebar-v2-location.${locId} #app > div:nth-child(2) > div:nth-child(1) > div.flex.v2-open > div:nth-child(2) > header.hl_header > div.container-fluid.\\!justify-end,
@@ -200,13 +334,11 @@
         overflow: hidden !important;
       }
 
-      /* Remove space left behind by hidden header */
       #app > div:nth-child(2) > div:nth-child(1) > div.flex.v2-open > div:nth-child(2) {
         padding-top: 0 !important;
         margin-top: 0 !important;
       }
 
-      /* Hide the Reputation Settings internal left tab/sidebar */
       #reputation-settings-container > div.hr-wrapper-container.reputationApp > div.hr-config-provider.font-sans > div.flex.min-h-0 > div.hr-tabs.hr-tabs--bar-type > div.hr-tabs-nav--bar-type.hr-tabs-nav--left > div.hr-tabs-nav-scroll-wrapper > div.hr-tabs-nav-y-scroll > div.hr-tabs-nav-scroll-content,
       .sidebar-v2-location.${locId} #reputation-settings-container > div.hr-wrapper-container.reputationApp > div.hr-config-provider.font-sans > div.flex.min-h-0 > div.hr-tabs.hr-tabs--bar-type > div.hr-tabs-nav--bar-type.hr-tabs-nav--left > div.hr-tabs-nav-scroll-wrapper > div.hr-tabs-nav-y-scroll > div.hr-tabs-nav-scroll-content {
         display: none !important;
@@ -217,7 +349,6 @@
         overflow: hidden !important;
       }
 
-      /* Collapse the internal tab-nav wrapper */
       #reputation-settings-container .hr-tabs-nav--left,
       #reputation-settings-container .hr-tabs-nav-scroll-wrapper,
       #reputation-settings-container .hr-tabs-nav-y-scroll {
@@ -229,7 +360,6 @@
         overflow: hidden !important;
       }
 
-      /* Expand settings content after internal left tab menu is hidden */
       #reputation-settings-container > div.hr-wrapper-container.reputationApp > div.hr-config-provider.font-sans > div.flex.min-h-0 > div.hr-tabs.hr-tabs--bar-type,
       .sidebar-v2-location.${locId} #reputation-settings-container > div.hr-wrapper-container.reputationApp > div.hr-config-provider.font-sans > div.flex.min-h-0 > div.hr-tabs.hr-tabs--bar-type {
         width: 100% !important;
@@ -242,446 +372,279 @@
         max-width: 100% !important;
       }
     `;
+  }
+
+  const HOMEFLOW_CSS = `
+    header.hl_header,
+    .hl_header,
+    .hl-topbar {
+      display: none !important;
+      visibility: hidden !important;
+      height: 0 !important;
+      min-height: 0 !important;
+      max-height: 0 !important;
+      overflow: hidden !important;
     }
 
-    /* ─────────────────────────────
-       APPLY SIDEBAR GLOBAL STYLES
-       Injected once per location visit; removed when excluded location detected.
-    ───────────────────────────── */
-    function applySidebarGlobalLayout() {
-        if (!shouldRunOnLocation()) return;
-
-        const styleId = "custom-sidebar-global-layout";
-
-        if (!document.getElementById(styleId)) {
-            const locId = getLocationId();
-            if (!locId) return;
-
-            const style = document.createElement("style");
-            style.id = styleId;
-            style.innerHTML = getSidebarGlobalCss(locId);
-            document.head.appendChild(style);
-        }
+    #app > div:nth-child(2) > div:nth-child(1) > div.flex.v2-open > div:nth-child(2) > header.hl_header > div.flex.flex-row {
+      display: none !important;
     }
 
-    /* ─────────────────────────────
-       APPLY UI CHANGES ON REVIEWS
-    ───────────────────────────── */
-    function applyReviewsLayout() {
-        if (!shouldRunOnLocation() || !isReviewsPage()) return;
+    #app > div:nth-child(2) > div:nth-child(1) > div.flex.v2-open > div:nth-child(2) {
+      margin-top: 0 !important;
+      padding-top: 0 !important;
+    }
+  `;
 
-        const styleId = "custom-review-layout-test";
+  /* =========================================================
+     REDIRECT
+  ========================================================= */
 
-        if (!document.getElementById(styleId)) {
-            const style = document.createElement("style");
-            style.id = styleId;
-
-            style.innerHTML = `
-        /* Hide top header bar */
-        header.hl_header,
-        .hl_header,
-        .hl-topbar {
-          display: none !important;
-        }
-
-        /* Hide the reputation sub-menu tabs */
-        .reputation-tabs,
-        .hl_tab-nav,
-        [class*="reputation"] > nav,
-        .tab-navigation,
-        .nav-tabs {
-          display: none !important;
-        }
-
-        /* Hide Add Reviews button */
-        #add-reviews-button {
-          display: none !important;
-        }
-
-        /* Hide Send Review Request button */
-        #send-review-request-button {
-          display: none !important;
-        }
-
-        /* Full width layout */
-        #app,
-        .hl_wrapper,
-        .hl_main,
-        main {
-          margin: 0 !important;
-          padding: 0 !important;
-          width: 100% !important;
-          max-width: 100% !important;
-        }
-      `;
-
-            document.head.appendChild(style);
-        }
+  async function redirectToReviews(state) {
+    if (
+      state.isExcluded ||
+      !state.locationId ||
+      !state.isOverviewPage
+    ) {
+      return;
     }
 
-    /* ─────────────────────────────
-       APPLY UI CHANGES ON WIDGETS
-    ───────────────────────────── */
-    function applyWidgetLayout() {
-        if (!shouldRunOnLocation() || !isWidgetPage()) return;
+    const reviewsPath =
+      "/v2/location/" +
+      state.locationId +
+      "/reputation/reviews";
 
-        const styleId = "custom-widget-layout-test";
-
-        if (!document.getElementById(styleId)) {
-            const style = document.createElement("style");
-            style.id = styleId;
-
-            style.innerHTML = `
-        /* Hide top header/menu bar */
-        header.hl_header,
-        .hl_header,
-        .hl-topbar {
-          display: none !important;
-        }
-
-        /* Specific selector for the top bar flex row */
-        #app > div:nth-child(2) > div:nth-child(1) > div.flex.v2-open > div:nth-child(2) > header.hl_header > div.flex.flex-row {
-          display: none !important;
-        }
-
-        /* Full width layout */
-        #app,
-        .hl_wrapper,
-        .hl_main,
-        main {
-          margin: 0 !important;
-          padding: 0 !important;
-          width: 100% !important;
-          max-width: 100% !important;
-        }
-      `;
-
-            document.head.appendChild(style);
-        }
+    if (window.location.pathname === reviewsPath) {
+      return;
     }
 
-    /* ─────────────────────────────
-       APPLY UI CHANGES ON SOCIAL PLANNER
-    ───────────────────────────── */
-    function applySocialPlannerLayout() {
-        if (!shouldRunOnLocation() || !isSocialPlannerPage()) return;
-
-        const styleId = "custom-social-planner-layout-test";
-
-        if (!document.getElementById(styleId)) {
-            const style = document.createElement("style");
-            style.id = styleId;
-
-            style.innerHTML = `
-        /* Hide top header/menu bar */
-        header.hl_header,
-        .hl_header,
-        .hl-topbar {
-          display: none !important;
-        }
-
-        /* Specific selector for the top bar flex row */
-        #app > div:nth-child(2) > div:nth-child(1) > div.flex.v2-open > div:nth-child(2) > header.hl_header > div.flex.flex-row {
-          display: none !important;
-        }
-
-        /* Full width layout */
-        #app,
-        .hl_wrapper,
-        .hl_main,
-        main {
-          margin: 0 !important;
-          padding: 0 !important;
-          width: 100% !important;
-          max-width: 100% !important;
-        }
-      `;
-
-            document.head.appendChild(style);
-        }
-    }
-
-    /* ─────────────────────────────
-       APPLY UI CHANGES ON REPUTATION INTEGRATIONS SETTINGS TAB
-    ───────────────────────────── */
-    function applyReputationIntegrationsLayout() {
-        if (!shouldRunOnLocation() || !isReputationIntegrationsPage()) return;
-
-        const styleId = "custom-reputation-integrations-layout-test";
-
-        if (!document.getElementById(styleId)) {
-            const locId = getLocationId() || "";
-            const style = document.createElement("style");
-            style.id = styleId;
-            style.innerHTML = getReputationSettingsCss(locId);
-            document.head.appendChild(style);
-        }
-    }
-
-    /* ─────────────────────────────
-       APPLY UI CHANGES ON REVIEWS AI SETTINGS TAB
-    ───────────────────────────── */
-    function applyReviewsAILayout() {
-        if (!shouldRunOnLocation() || !isReviewsAIPage()) return;
-
-        const styleId = "custom-reviews-ai-layout-test";
-
-        if (!document.getElementById(styleId)) {
-            const locId = getLocationId() || "";
-            const style = document.createElement("style");
-            style.id = styleId;
-            style.innerHTML = getReputationSettingsCss(locId);
-            document.head.appendChild(style);
-        }
-    }
-
-    /* ─────────────────────────────
-       CLEANUP — removes ALL injected style tags
-    ───────────────────────────── */
-    function removeAllLayouts() {
-        var ids = [
-            "custom-sidebar-global-layout",
-            "custom-review-layout-test",
-            "custom-widget-layout-test",
-            "custom-social-planner-layout-test",
-            "custom-reputation-integrations-layout-test",
-            "custom-reviews-ai-layout-test"
-        ];
-        ids.forEach(function (id) {
-            var el = document.getElementById(id);
-            if (el) el.remove();
-        });
-    }
-
-    /* ─────────────────────────────
-       RUN CONTROLLER
-    ───────────────────────────── */
-    function run() {
-        // If this is an excluded location, strip all injected styles and exit
-        if (!shouldRunOnLocation()) {
-            removeAllLayouts();
-            return;
-        }
-
-        // Redirect overview → reviews
-        if (isOverviewPage()) {
-            redirectToReviews();
-            return;
-        }
-
-        // Always apply sidebar global styles for non-excluded locations
-        applySidebarGlobalLayout();
-
-        // Remove page-specific styles first, then re-apply the correct one
-        var pageStyleIds = [
-            "custom-review-layout-test",
-            "custom-widget-layout-test",
-            "custom-social-planner-layout-test",
-            "custom-reputation-integrations-layout-test",
-            "custom-reviews-ai-layout-test"
-        ];
-        pageStyleIds.forEach(function (id) {
-            var el = document.getElementById(id);
-            if (el) el.remove();
+    try {
+      if (
+        window.AppUtils &&
+        window.AppUtils.RouteHelper &&
+        typeof window.AppUtils.RouteHelper.navigate === "function"
+      ) {
+        await window.AppUtils.RouteHelper.navigate({
+          path: reviewsPath,
+          replace: true
         });
 
-        if (isReviewsPage()) {
-            applyReviewsLayout();
-        } else if (isWidgetPage()) {
-            applyWidgetLayout();
-        } else if (isSocialPlannerPage()) {
-            applySocialPlannerLayout();
-        } else if (isReputationIntegrationsPage()) {
-            applyReputationIntegrationsLayout();
-        } else if (isReviewsAIPage()) {
-            applyReviewsAILayout();
-        }
-    }
-
-    /* ─────────────────────────────
-       LAYER 1: GHL NATIVE APP EVENTS (v3 API)
-    ───────────────────────────── */
-    window.addEventListener('routeLoaded', run);
-    window.addEventListener('routeChangeEvent', run);
-
-    /* ─────────────────────────────
-       LAYER 2: INTERCEPT HISTORY API
-       Catches SPA pushState / replaceState navigation
-    ───────────────────────────── */
-    const originalPushState = history.pushState;
-    const originalReplaceState = history.replaceState;
-
-    history.pushState = function () {
-        originalPushState.apply(this, arguments);
-        setTimeout(run, 0);
-    };
-
-    history.replaceState = function () {
-        originalReplaceState.apply(this, arguments);
-        setTimeout(run, 0);
-    };
-
-    window.addEventListener("popstate", run);
-
-    /* ─────────────────────────────
-       LAYER 3: MUTATION OBSERVER
-       Catches DOM changes that indicate a route change
-    ───────────────────────────── */
-    let lastUrl = location.href;
-    const observer = new MutationObserver(() => {
-        if (location.href !== lastUrl) {
-            lastUrl = location.href;
-            run();
-        }
-    });
-
-    /* ─────────────────────────────
-       LAYER 4: POLLING FALLBACK
-       Safety net for any navigation not caught by layers 1–3
-    ───────────────────────────── */
-    setInterval(function () {
-        if (location.href !== lastUrl) {
-            lastUrl = location.href;
-            run();
-        }
-    }, 200);
-
-    /* ─────────────────────────────
-       INIT
-    ───────────────────────────── */
-    window.addEventListener("load", function () {
-        run();
-        observer.observe(document.body, {
-            childList: true,
-            subtree: true
-        });
-    });
-
-    run();
-
-})();
-
-/* ─────────────────────────────
-   HOMEFLOW CUSTOMIZATIONS BLOCK
-───────────────────────────── */
-
-(function () {
-  const TARGET_LOCATION_ID = "XzzLQ42sqJR43o30CP34";
-
-        function getLocationId() {
-    if (window.AppUtils && window.AppUtils.Utilities) {
-      try {
-        const loc = window.AppUtils.Utilities.getCurrentLocation();
-        if (loc && loc.id) return loc.id;
-      } catch (e) { }
-    }
-
-        const match = window.location.pathname.match(/\/v2\/location\/([^\/]+)/);
-        return match ? match[1] : null;
-  }
-
-        function isConversationTemplatesPage() {
-    return window.location.pathname.includes("/conversations/templates");
-  }
-
-        function isMarketingEmailsPage() {
-    return window.location.pathname.includes("/marketing/emails");
-  }
-
-        function shouldRun() {
-    return (
-        getLocationId() === TARGET_LOCATION_ID &&
-        (
-        isConversationTemplatesPage() ||
-        isMarketingEmailsPage()
-        )
-        );
-  }
-
-        function applyLayout() {
-
-    const styleId = "hide-header-templates-emails";
-
-        const existing = document.getElementById(styleId);
-
-        if (!shouldRun()) {
-      if (existing) existing.remove();
         return;
+      }
+    } catch (error) {
+      // Fall back to browser navigation.
     }
 
-        if (existing) return;
+    window.history.replaceState(null, "", reviewsPath);
+    window.dispatchEvent(new PopStateEvent("popstate"));
 
-        const style = document.createElement("style");
-        style.id = styleId;
-
-        style.innerHTML = `
-        /* Hide top header */
-        header.hl_header,
-        .hl_header,
-        .hl-topbar {
-            display: none !important;
-        visibility: hidden !important;
-        height: 0 !important;
-        min-height: 0 !important;
-        max-height: 0 !important;
-        overflow: hidden !important;
+    setTimeout(function () {
+      if (window.location.pathname.includes("/reputation/overview")) {
+        window.location.href = reviewsPath;
       }
-
-      /* Hide header flex row */
-      #app > div:nth-child(2) > div:nth-child(1) > div.flex.v2-open > div:nth-child(2) > header.hl_header > div.flex.flex-row {
-            display: none !important;
-      }
-
-      /* Remove top spacing */
-      #app > div:nth-child(2) > div:nth-child(1) > div.flex.v2-open > div:nth-child(2) {
-            margin-top: 0 !important;
-        padding-top: 0 !important;
-      }
-        `;
-
-        document.head.appendChild(style);
+    }, 300);
   }
 
-        function run() {
-            applyLayout();
+  /* =========================================================
+     APPLY STATE
+  ========================================================= */
+
+  async function applyState(state) {
+    if (state.isExcluded) {
+      removeAllLayouts();
+      return;
+    }
+
+    if (state.isOverviewPage) {
+      removeAllLayouts();
+      await redirectToReviews(state);
+      return;
+    }
+
+    ensureStyle(
+      STYLE_IDS.SIDEBAR,
+      getSidebarGlobalCss(state.locationId),
+      true
+    );
+
+    ensureStyle(
+      STYLE_IDS.REVIEWS,
+      REVIEWS_CSS,
+      state.isReviewsPage
+    );
+
+    ensureStyle(
+      STYLE_IDS.WIDGET,
+      WIDGET_CSS,
+      state.isWidgetPage
+    );
+
+    ensureStyle(
+      STYLE_IDS.SOCIAL_PLANNER,
+      SOCIAL_PLANNER_CSS,
+      state.isSocialPlannerPage
+    );
+
+    ensureStyle(
+      STYLE_IDS.REPUTATION_INTEGRATIONS,
+      getReputationSettingsCss(state.locationId),
+      state.isReputationIntegrationsPage
+    );
+
+    ensureStyle(
+      STYLE_IDS.REVIEWS_AI,
+      getReputationSettingsCss(state.locationId),
+      state.isReviewsAIPage
+    );
+
+    ensureStyle(
+      STYLE_IDS.HOMEFLOW,
+      HOMEFLOW_CSS,
+      state.isHomeFlowTemplatesPage ||
+      state.isHomeFlowEmailsPage
+    );
   }
 
-        window.addEventListener("load", run);
-        window.addEventListener("popstate", run);
-        window.addEventListener("routeLoaded", run);
-        window.addEventListener("routeChangeEvent", run);
+  /* =========================================================
+     CENTRAL ASYNC CONTROLLER
+  ========================================================= */
 
-        const pushState = history.pushState;
-        history.pushState = function () {
-            pushState.apply(this, arguments);
-        setTimeout(run, 0);
+  async function run() {
+    if (running) {
+      rerunRequested = true;
+      return;
+    }
+
+    running = true;
+    const thisRun = ++runSequence;
+
+    try {
+      const state = await buildState();
+
+      if (thisRun !== runSequence) {
+        return;
+      }
+
+      const stateKey = getStateKey(state);
+
+      if (stateKey === lastAppliedStateKey) {
+        return;
+      }
+
+      await applyState(state);
+
+      if (thisRun === runSequence) {
+        lastAppliedStateKey = stateKey;
+      }
+    } catch (error) {
+      console.error(
+        "[GHL White Label Customizations] Runtime error:",
+        error
+      );
+    } finally {
+      running = false;
+
+      if (rerunRequested) {
+        rerunRequested = false;
+        scheduleRun();
+      }
+    }
+  }
+
+  function scheduleRun() {
+    if (scheduled) {
+      return;
+    }
+
+    scheduled = true;
+
+    setTimeout(function () {
+      scheduled = false;
+      run();
+    }, 0);
+  }
+
+  /* =========================================================
+     ROUTE EVENTS
+  ========================================================= */
+
+  window.addEventListener("routeLoaded", scheduleRun);
+  window.addEventListener("routeChangeEvent", scheduleRun);
+  window.addEventListener("popstate", scheduleRun);
+
+  /* =========================================================
+     SINGLE HISTORY API FALLBACK
+  ========================================================= */
+
+  const originalPushState = history.pushState;
+  const originalReplaceState = history.replaceState;
+
+  history.pushState = function () {
+    const result = originalPushState.apply(this, arguments);
+    scheduleRun();
+    return result;
   };
 
-        const replaceState = history.replaceState;
-        history.replaceState = function () {
-            replaceState.apply(this, arguments);
-        setTimeout(run, 0);
+  history.replaceState = function () {
+    const result = originalReplaceState.apply(this, arguments);
+    scheduleRun();
+    return result;
   };
 
-        let lastUrl = location.href;
+  /* =========================================================
+     SINGLE MUTATION OBSERVER
+     Only used as a route-change fallback.
+  ========================================================= */
 
-  new MutationObserver(() => {
-    if (location.href !== lastUrl) {
-            lastUrl = location.href;
-        run();
+  let observerStarted = false;
+
+  function startObserver() {
+    if (observerStarted || !document.body) {
+      return;
     }
-  }).observe(document.body, {
-            childList: true,
-        subtree: true
-  });
 
-  setInterval(() => {
-    if (location.href !== lastUrl) {
-            lastUrl = location.href;
-        run();
-    }
-  }, 300);
+    observerStarted = true;
 
-        run();
+    const observer = new MutationObserver(function () {
+      const currentUrl = window.location.href;
+
+      if (currentUrl !== lastObservedUrl) {
+        lastObservedUrl = currentUrl;
+        scheduleRun();
+      }
+    });
+
+    observer.observe(document.body, {
+      childList: true,
+      subtree: true
+    });
+  }
+
+  /* =========================================================
+     INITIALIZATION
+  ========================================================= */
+
+  if (document.readyState === "loading") {
+    document.addEventListener(
+      "DOMContentLoaded",
+      function () {
+        startObserver();
+        scheduleRun();
+      },
+      { once: true }
+    );
+  } else {
+    startObserver();
+    scheduleRun();
+  }
+
+  window.addEventListener(
+    "load",
+    function () {
+      startObserver();
+      scheduleRun();
+    },
+    { once: true }
+  );
 
 })();

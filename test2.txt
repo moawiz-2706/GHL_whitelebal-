@@ -1,0 +1,13 @@
+<script src="https://ajax.googleapis.com/ajax/libs/jquery/3.7.1/jquery.min.js"></script>
+<script
+  src="https://cdn.hlprotools.com/resources/widgets/1/nfoionp494j0u6j4ijjjfeijgoier4056.js"
+  data-user-id="{{user.id}}"
+  data-user-name="{{user.name}}"
+  data-user-email="{{user.email}}"
+  data-date-added="{{user.data.date_added.seconds}}"
+  data-user-role="{{user.role}}"
+  data-user-type="{{user.type}}"></script>
+
+
+<script>
+<script src="https://ghl-white-label-assets.vercel.app/releases/v1.0.0/homeflow-ghl-customizations.js"></script>
